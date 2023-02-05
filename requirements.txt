@@ -1,0 +1,6 @@
+pandas
+investpy
+plotly
+shiny
+shinywidgets
+qgrid
