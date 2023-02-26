@@ -2,12 +2,13 @@ from shiny import *
 from shinywidgets import *
 from datetime import datetime, date, timedelta
 from os import path
-
+from random import choices
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import plotly.figure_factory as ff
+from plotly.subplots import make_subplots
 import qgrid
 
 from calc import *
@@ -15,6 +16,61 @@ from calc import *
 df_fondsen = pd.read_csv("fondsen.csv")
 df_fondsen = df_fondsen.dropna()
 df_fondsen = df_fondsen.set_index("id")
+
+print(df_fondsen.head())
+# df_koers_data_all = None
+#
+# for fnd in df_fondsen.index:
+#     file_name = df_fondsen.loc[fnd, "file_name"]
+#     directory = df_fondsen.loc[fnd, "directory"]
+#     name = df_fondsen.loc[fnd, "name"]
+#
+#     file_path = path.join("Data", directory, file_name)
+#
+#     df = pd.read_csv(file_path, parse_dates=["Date"])
+#     df = df.rename(columns={"Date": "Datum", "Price": "Koers"})
+#     df = df[["Datum", "Koers"]]
+#     df["Fonds"] = fnd
+#     df["Fonds Naam"] = name
+#
+#     if df["Koers"].dtype == "object":
+#         df["Koers"] = df["Koers"].str.replace(",", "").astype(float)
+#     datum0 = df["Datum"].min()
+#     koers0 = df[df["Datum"] == datum0]["Koers"]
+#     print(f"datum0 {datum0} - koers0 {koers0}")
+#     df["Relatieve Koers"] = df["Koers"].apply(lambda x: x/koers0)
+#     df["Koers Delta"] = 100 * (df["Koers"] - df["Koers"].shift(1)) / df["Koers"].shift(1)
+#     df["Koers Delta Min"] = df["Koers Delta"].rolling(7, min_periods=3, center=True).min()
+#     df["Koers Delta Max"] = df["Koers Delta"].rolling(7, min_periods=3, center=True).max()
+#
+#     print(df.head())
+#     df["Maand"] = df["Datum"].apply(lambda x: x.replace(day=1))
+#
+#     if df_koers_data_all is None:
+#         df_koers_data_all = df
+#     else:
+#         df_koers_data_all = pd.concat([df_koers_data_all, df])
+#
+#
+# df_koers_data_all.to_pickle("df_koers_data_all.pkl")
+df_koers_data_all = pd.read_pickle("df_koers_data_all.pkl")
+# print(df_koers_data_all.head())
+# df_eff_jaar_interest = None
+#
+# for fonds in df_fondsen.index:
+#     dff = pd.read_csv("Pre\\{}_3.csv".format(fonds), parse_dates=["Datum_Eerste_Storting", "Datum_Verkoop"])
+#     dff["Fonds"] = fonds
+#     dff["Fonds Naam"] = df_fondsen["name"].loc[fonds]
+#
+#     if df_eff_jaar_interest is None:
+#         df_eff_jaar_interest = dff
+#     else:
+#         df_eff_jaar_interest = pd.concat([df_eff_jaar_interest, dff])
+#
+# df_eff_jaar_interest["Jaar Eerste Storting"] = df_eff_jaar_interest["Datum_Eerste_Storting"].dt.year
+# df_eff_jaar_interest["Jaar Verkoop"] = df_eff_jaar_interest["Datum_Verkoop"].dt.year
+# df_eff_jaar_interest.to_pickle("df_eff_jaar_interest.pkl")
+df_eff_jaar_interest = pd.read_pickle("df_eff_jaar_interest.pkl")
 
 app_ui = ui.page_fluid(
     ui.layout_sidebar(
@@ -35,13 +91,6 @@ app_ui = ui.page_fluid(
                     ui.h4("Effective Interest"),
                     output_widget("out_eff_interest_eenmalig"),
                 ),
-                # ui.nav(
-                #     "Maandelijkse Storting",
-                #     ui.h4("Effective Interest"),
-                #     output_widget("out_eff_interest_maandelijks"),
-                #     ui.output_ui("out_samenvatting_maandelijks"),
-                #     output_widget("out_maandelijks_data")
-                # ),
                 ui.nav(
                     "Effectiviteitsmatrix",
                     ui.h4("Effective Interest"),
@@ -53,6 +102,25 @@ app_ui = ui.page_fluid(
                     ui.tags.p("Opgelet! Het kan enige tijd duren voor deze data berekend is"),
                     output_widget("out_eff_interest_matrix"),
                     output_widget("out_eff_interest_density")
+                ),
+                ui.nav(
+                    "Vergelijking",
+                    ui.h4("Vergelijking fondsen"),
+                    ui.tags.p(
+                        "Kies 2 fondsen. In de grafiek zullen de 2 fondsen vergeleken worden voor de situaties",
+                        ui.tags.ul(
+                            ui.tags.li("Maandelijkse stortingen vanaf jaar x, eerste beursdag na de 10e van de maand (stortingen kunnen beginnen in januari, februari, ..."),
+                            ui.tags.li("Verkoop in jaar y, eerste beursdag na de 20e van de maand (verkoop kan gebeuren in januari, februari, ..."),
+                            ui.tags.li("Voor elke combinatie (storting vanaf jaar x, verkoop in jaar y), is er een distributie van effectieve jaarinteresten"),
+                            ui.tags.li("Voor elk fonds is een instapkost van 3% in rekenening gebracht (wat allicht niet correct is, maar de vergelijking gaat dus over de pure koerseffectiviteit)")
+                        )
+                    ),
+                    ui.panel_well(
+                        ui.input_select("in_fonds_vgl", "Fonds", choices=[], selected=[], multiple=True, selectize=True),
+                    ),
+                    output_widget("out_koers_vergelijking"),
+                    output_widget("out_koers_delta_vergelijking"),
+                    output_widget("out_eff_interest_vergelijking")
                 )
             ),
             width=10
@@ -74,6 +142,7 @@ def server(input, output, session):
     def update_fonds_input():
         fondsen_dict = df_fondsen["name"].to_dict()
         ui.update_select("in_fonds", choices=fondsen_dict, selected=df_fondsen.index[0])
+        ui.update_select("in_fonds_vgl", choices=fondsen_dict, selected=df_fondsen.index[0])
 
 
     @reactive.Calc
@@ -107,6 +176,13 @@ def server(input, output, session):
 
         return df
 
+    @reactive.Calc
+    def koers_data_sel():
+        req(input.in_fonds_vgl())
+
+        df = df_koers_data_all[df_koers_data_all["Fonds"].isin(input.in_fonds_vgl())]
+
+        return df
 
     @reactive.Calc
     def verkoop_dt():
@@ -433,6 +509,166 @@ def server(input, output, session):
         fig = go.FigureWidget(fig)
 
         return fig
+
+    @output
+    @render_widget
+    def out_koers_vergelijking():
+        req(not koers_data_sel().empty)
+
+        df_koers = koers_data_sel()
+
+        fig = px.line(df_koers, x="Datum", y="Relatieve Koers", color="Fonds Naam")
+
+        fig.update_layout(
+            # create first Y-axis
+            yaxis=dict(
+                title="Eff Interest (%)"
+            )
+        )
+        fig.update_layout(height=600)
+        fig.layout.hovermode="closest"
+
+        fig = go.FigureWidget(fig)
+
+        return fig
+
+    @output
+    @render_widget
+    def out_koers_delta_vergelijking():
+        req(not koers_data_sel().empty)
+
+        df_koers = koers_data_sel()
+
+        fig = go.Figure()
+        fondsen = [f for f in input.in_fonds_vgl()]
+        fonds_namen = [df_fondsen.loc[f, "name"] for f in fondsen]
+
+        for i, f in enumerate(fondsen):
+            df_koers_fonds = df_koers[df_koers["Fonds"] == f]
+
+
+            fig.add_trace(go.Scatter(
+                x=df_koers_fonds["Datum"],
+                y=df_koers_fonds["Koers Delta Min"],
+                mode='lines',
+                fill=None,
+                line_color=px.colors.qualitative.Plotly[i]
+            ))
+            fig.add_trace(go.Scatter(
+                x=df_koers_fonds["Datum"],
+                y=df_koers_fonds["Koers Delta Max"],
+                mode='lines',
+                fill="tonexty",
+                line_color=px.colors.qualitative.Plotly[i],
+                # fill_color=px.colors.qualitative.Plotly[i],
+                name=fonds_namen[i]
+            ))
+
+        fig.update_layout(height=600)
+        fig.layout.hovermode="closest"
+
+        fig = go.FigureWidget(fig)
+
+        return fig
+
+    @output
+    @render_widget
+    def out_eff_interest_vergelijking():
+        req(input.in_fonds_vgl())
+
+        fondsen = [f for f in input.in_fonds_vgl()]
+        fonds_namen = [df_fondsen.loc[f, "name"] for f in fondsen]
+
+        print(fonds_namen)
+
+        print("Vergelijking voor fondsen {}".format(fondsen))
+        dfd = df_eff_jaar_interest[df_eff_jaar_interest["Fonds"].isin(fondsen)]
+
+        min_year_st = dfd.groupby("Fonds")["Jaar Eerste Storting"].min().max()
+        max_year_st = dfd["Jaar Eerste Storting"].max()
+        min_year_v = dfd.groupby("Fonds")["Jaar Verkoop"].min().max()
+        max_year_v = dfd["Jaar Verkoop"].max()
+
+        year_list = [dfd["Eff Interest"][dfd["Jaar Eerste Storting"] == jaar] for jaar in
+                     range(min_year_st, max_year_st + 1)]
+
+        years_v = range(min_year_v, max_year_v + 1)
+        i_v = range(max_year_v - min_year_v + 1)
+
+        years_st = range(min_year_st, max_year_st + 1)
+        i_st = range(max_year_st - min_year_st + 1)
+
+        rows = len(years_v)
+        cols = len(years_st)
+
+        print(years_v, years_st, i_v, i_st)
+
+        titles = [["" for i in range(cols)] for j in range(rows)]
+        figs = [[None for i in range(cols)] for j in range(rows)]
+
+        for r in i_v:
+            yr_v = years_v[r]
+
+            for c in i_st:
+                # print("row {}, col {}".format(r, c))
+                yr_st = years_st[c]
+                # print("yr_st {}, yr_v {}".format(yr_st, yr_v))
+                if yr_st <= yr_v:
+
+                    df_st_v = [dfd["Eff Interest"][(dfd["Jaar Eerste Storting"] == yr_st) &
+                                                      (dfd["Jaar Verkoop"] == yr_v) &
+                                                      (dfd["Fonds"] == fonds)].dropna() for fonds in fondsen]
+
+                    min_len = min([len(df_st_v[i].index) for i in range(len(fondsen))])
+                    max_len = max([len(df_st_v[i].index) for i in range(len(fondsen))])
+
+                    if min_len > 0:
+                        data = [0 for i in fondsen]
+
+                        for i in range(len(data)):
+                            if len(df_st_v[i]) < max_len:
+                                try:
+                                    data[i] = choices(df_st_v[i].tolist(), k=max_len)
+                                except:
+                                    print(f"error for {yr_st}, {yr_v}, {max_len}, {i}, {len(df_st_v[i])}")
+                                    continue
+                            else:
+                                data[i] = df_st_v[i].tolist()
+
+                        distplot = ff.create_distplot(data, fonds_namen, show_hist=False, show_rug=False)
+                        distplot.update_layout(title="({},{})".format(yr_st, yr_v))
+
+                        figs[r][c] = distplot
+                        titles[r][c] = "{}-{}".format(yr_st, yr_v)
+                    else:
+                        figs[r][c] = None
+                        titles[r][c] = ""
+                else:
+                    figs[r][c] = None
+                    titles[r][c] = ""
+
+        fig = make_subplots(rows=rows, cols=cols,
+                            subplot_titles=[titles[r][c] for r in reversed(range(rows)) for c in range(cols)])
+
+        for r in i_v:
+            for c in i_st:
+                if figs[r][c]:
+                    # print("{}, {}".format(r, c))
+                    for i in range(len(fondsen)):
+                        fig.add_trace(go.Scatter(figs[r][c].data[i], showlegend=(r + c == 0)), row=rows - r, col=c + 1)
+
+        fig.update_layout(
+            height=1600,
+            legend=dict(
+                yanchor="bottom",
+                y=0.01,
+                xanchor="left",
+                x=0.5
+            )
+        )
+
+        return go.FigureWidget(fig)
+
 
 app = App(app_ui, server)
 
