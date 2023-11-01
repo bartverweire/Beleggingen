@@ -77,6 +77,7 @@ app_ui = ui.page_fluid(
         ui.panel_sidebar(
             ui.input_numeric("in_bedrag_storting", "Bedrag Storting", min=1, max=10000, value=1000),
             ui.input_numeric("in_instapkost_pct", "Instapkost (%)", min=0, max=5, step=0.1, value=3),
+            ui.input_numeric("in_jaarinterest_pct", "Jaarinterest (%)", min=0, max=5, step=0.1, value=1),
             ui.input_numeric("in_verkoop_sper_periode", "Sper Periode", min=1, max=365, value=90),
             ui.input_numeric("in_min_stortingen_voor_verkoop", "Minimum # Stortingen", min=1, max=10, value=2),
             ui.input_numeric("in_dag_storting", "Dag Storting", min=1, max=25, step=1, value=10),
@@ -90,6 +91,12 @@ app_ui = ui.page_fluid(
                     "Eenmalige Storting",
                     ui.h4("Effective Interest"),
                     output_widget("out_eff_interest_eenmalig"),
+                ),
+                ui.nav(
+                    "Maandelijkse Stortingen",
+                    ui.h4("Kapitaal evolutie"),
+                    output_widget("out_eff_interest_maandelijks"),
+                    output_widget("out_maandelijkse_stortingen_tabel")
                 ),
                 ui.nav(
                     "Effectiviteitsmatrix",
@@ -131,12 +138,14 @@ app_ui = ui.page_fluid(
 def server(input, output, session):
 
     verkoop_dt_doel = reactive.Value()
+    start_mnd_storting = reactive.Value()
 
     @reactive.Effect
     def init_verkoop_dt():
         req(not data().empty)
 
         verkoop_dt_doel.set(data()["Datum"].max())
+        start_mnd_storting.set(data()["Datum"].min())
 
     @reactive.Effect
     def update_fonds_input():
@@ -224,6 +233,7 @@ def server(input, output, session):
 
         return df
 
+
     @reactive.Calc
     def df_mnd_stortingen():
         req(not data().empty,  input.in_dag_storting())
@@ -239,6 +249,61 @@ def server(input, output, session):
         return df_storting_datums
 
     @reactive.Calc
+    def df_mnd_evolutie():
+        req(not data().empty, start_mnd_storting())
+
+        dag_interest_pct = 100 * ((1 + input.in_jaarinterest_pct() / 100) ** (1 / 365) - 1)
+        df = data().copy().sort_values(["Datum"])
+
+        if start_mnd_storting():
+            df = df[df["Datum"] > start_mnd_storting()]
+
+        storting_datums = df[df["Datum"].dt.day >= input.in_dag_storting()].groupby("Maand")["Datum"].min()
+
+        df_stortingen = df[df["Datum"].isin(storting_datums)].copy()
+        df_stortingen["Kapitaal"] = input.in_bedrag_storting()
+        df_stortingen["Aandelen"] = df_stortingen["Koers"].apply(lambda x : input.in_bedrag_storting() * (1 - input.in_instapkost_pct() / 100) / x)
+
+        df_stortingen = df_stortingen[["Datum","Kapitaal","Aandelen","Koers"]]
+
+        # s_datum = pd.Series()
+        # s_koers = pd.Series()
+        df_stortingen["Kapitaal Inbreng"] = 0
+        df_stortingen["Totaal Aandelen"] = 0
+        df_stortingen["Kapitaal Beleggingen"] = 0
+        df_stortingen["Kapitaal Sparen"] = 0
+        df_stortingen["Kapitaal Beleggingen Pct"] = 0.97
+        df_stortingen["Kapitaal Sparen Pct"] = 1
+
+        for i in df_stortingen.index:
+            datum = df_stortingen["Datum"].loc[i]
+            koers = df_stortingen["Koers"].loc[i]
+
+            stortingen = df_stortingen[df_stortingen["Datum"] <= datum].copy()
+            if not stortingen.empty:
+                stortingen["Dagen Actief"] = stortingen["Datum"].apply(lambda x : datum - x).dt.days
+                stortingen["Kapitaal na interest"] = input.in_bedrag_storting() * (1 + dag_interest_pct / 100) ** stortingen["Dagen Actief"]
+
+                kapitaal_inbreng = stortingen["Kapitaal"].sum()
+                aandelen = stortingen["Aandelen"].sum()
+                kapitaal_belegging = aandelen * koers
+                kapitaal_sparen = stortingen["Kapitaal na interest"].sum()
+
+                # s_datum.append(datum)
+                # s_koers.append(datum)
+                df_stortingen["Kapitaal Inbreng"].loc[i] = kapitaal_inbreng
+                df_stortingen["Totaal Aandelen"].loc[i] = aandelen
+                df_stortingen["Kapitaal Beleggingen"].loc[i] = kapitaal_belegging
+                df_stortingen["Kapitaal Sparen"].loc[i] = kapitaal_sparen
+                df_stortingen["Kapitaal Beleggingen Pct"].loc[i] = 100 * (kapitaal_belegging - kapitaal_inbreng) / kapitaal_inbreng
+                df_stortingen["Kapitaal Sparen Pct"].loc[i] = 100 * (kapitaal_sparen - kapitaal_inbreng) / kapitaal_inbreng
+
+
+
+        return df_stortingen
+
+
+    @reactive.Calc
     def df_mnd_verkoop_datums():
         req(not data().empty,  input.in_dag_storting())
 
@@ -250,6 +315,7 @@ def server(input, output, session):
 
         return df_verkoop_dt
 
+
     @reactive.Calc
     def df_stortingen_voor_verkoop():
         req(not df_mnd_stortingen().empty, verkoop_dt(), input.in_instapkost_pct())
@@ -260,6 +326,7 @@ def server(input, output, session):
         df_verkoop["Verkoop Waarde"] = input.in_bedrag_storting() * df_verkoop["Verkoop Ratio"]
 
         return df_verkoop
+
 
     @reactive.Calc
     def df_geldige_koersen():
@@ -389,24 +456,19 @@ def server(input, output, session):
         verkoop_dt_doel.set(datetime.strptime(points.xs[0], "%Y-%m-%d"))
 
 
-
     @output
     @render_widget
     def out_eff_interest_maandelijks():
-        req(not data().empty, not df_stortingen_voor_verkoop().empty, not df_koersen_met_equiv_jaar_interest().empty)
+        req(not data().empty, not df_mnd_evolutie().empty)
 
         df_koers = data()
-        df_verk = df_stortingen_voor_verkoop()
-        df_ji = df_koersen_met_equiv_jaar_interest()
-        df_ji_pos = df_ji[df_ji["Eff Interest"] > 0]
-        df_ji_neg = df_ji[df_ji["Eff Interest"] <= 0]
+        stortingen = df_mnd_evolutie()
+
         fig = go.Figure()
-
+        # fig.add_trace(go.Scatter(x=stortingen["Datum"], y=stortingen["Kapitaal Inbreng"], name="Kapitaal Inbreng", yaxis="y1"))
+        fig.add_trace(go.Scatter(x=stortingen["Datum"], y=stortingen["Kapitaal Beleggingen Pct"], name="Kapitaal Beleggingen Pct", yaxis="y1"))
+        fig.add_trace(go.Scatter(x=stortingen["Datum"], y=stortingen["Kapitaal Sparen Pct"], name="Kapitaal Sparen Pct", yaxis="y1"))
         fig.add_trace(go.Scatter(x=df_koers["Datum"], y=df_koers["Koers"], line=dict(color="lightgray"), name="Koers", yaxis="y2"))
-        fig.add_trace(go.Scatter(x=df_verk["Datum"], y=df_verk["Koers"], mode="markers", marker=dict(color="lime"), name="Koers", yaxis="y2"))
-        fig.add_trace(go.Scatter(x=df_ji["Datum"], y=df_ji["Eff Interest"], line=dict(color="blue"), name="Eff Interest", yaxis="y1"))
-
-        fig.add_vline(x=verkoop_dt(), line_width=3, line_dash="dash", line_color="lime")
 
         fig.update_layout(
             # create first Y-axis
@@ -423,15 +485,77 @@ def server(input, output, session):
             )
         )
         fig.update_layout(height=600)
-        fig.layout.hovermode="closest"
 
         fig = go.FigureWidget(fig)
 
         # set selection handler
-        scatter = fig.data[0]
-        scatter.on_click(click_fn)
+        # fig.data[0].on_click(click_fn)
+        fig.data[2].on_click(click_fn_mnd)
 
         return fig
+
+    def click_fn_mnd(trace, points, selector):
+        print("Clicked")
+        print("Datum Selectie {}".format(points.xs[0]))
+
+        start_mnd_storting.set(datetime.strptime(points.xs[0], "%Y-%m-%d"))
+
+    @output
+    @render_widget
+    def out_maandelijkse_stortingen_tabel():
+        """
+        Render the qgrid table
+        We also define a handler for the selection_changed event.
+        """
+        w = qgrid.show_grid(df_mnd_evolutie(), show_toolbar=False)
+        # define the handler for a selection change
+        # See https://qgrid.readthedocs.io/en/latest/index.html?highlight=selection_changed for info
+
+        return w
+
+
+    # @output
+    # @render_widget
+    # def out_eff_interest_maandelijks():
+    #     req(not data().empty, not df_stortingen_voor_verkoop().empty, not df_koersen_met_equiv_jaar_interest().empty)
+    #
+    #     df_koers = data()
+    #     df_verk = df_stortingen_voor_verkoop()
+    #     df_ji = df_koersen_met_equiv_jaar_interest()
+    #     df_ji_pos = df_ji[df_ji["Eff Interest"] > 0]
+    #     df_ji_neg = df_ji[df_ji["Eff Interest"] <= 0]
+    #     fig = go.Figure()
+    #
+    #     fig.add_trace(go.Scatter(x=df_koers["Datum"], y=df_koers["Koers"], line=dict(color="lightgray"), name="Koers", yaxis="y2"))
+    #     fig.add_trace(go.Scatter(x=df_verk["Datum"], y=df_verk["Koers"], mode="markers", marker=dict(color="lime"), name="Koers", yaxis="y2"))
+    #     fig.add_trace(go.Scatter(x=df_ji["Datum"], y=df_ji["Eff Interest"], line=dict(color="blue"), name="Eff Interest", yaxis="y1"))
+    #
+    #     fig.add_vline(x=verkoop_dt(), line_width=3, line_dash="dash", line_color="lime")
+    #
+    #     fig.update_layout(
+    #         # create first Y-axis
+    #         yaxis=dict(
+    #             title="Eff Interest (%)"
+    #         ),
+    #
+    #         # create second Y-axis
+    #         yaxis2=dict(
+    #             title="Koers (€)",
+    #             overlaying="y",
+    #             side="right",
+    #             position=1
+    #         )
+    #     )
+    #     fig.update_layout(height=600)
+    #     fig.layout.hovermode="closest"
+    #
+    #     fig = go.FigureWidget(fig)
+    #
+    #     # set selection handler
+    #     scatter = fig.data[0]
+    #     scatter.on_click(click_fn)
+    #
+    #     return fig
 
     @output
     @render_widget
@@ -552,7 +676,8 @@ def server(input, output, session):
                 y=df_koers_fonds["Koers Delta Min"],
                 mode='lines',
                 fill=None,
-                line_color=px.colors.qualitative.Plotly[i]
+                line_color=px.colors.qualitative.Plotly[i],
+                showlegend=False
             ))
             fig.add_trace(go.Scatter(
                 x=df_koers_fonds["Datum"],
